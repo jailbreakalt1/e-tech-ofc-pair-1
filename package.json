@@ -1,16 +1,27 @@
 {
-  "name": "e-tech-ofc-pair",
+  "name": "e-tech-ofc-enhanced",
   "version": "2.0.0",
+  "description": "E TECH OFC - Enhanced WhatsApp Bot by MR EPHRAIM OFC",
   "main": "index.js",
   "type": "module",
-  "scripts": { "start": "node index.js" },
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node --watch index.js"
+  },
   "engines": { "node": ">=20.0.0" },
   "dependencies": {
-    "@whiskeysockets/baileys": "7.0.0-rc14",
-    "awesome-phonenumber": "7.2.0",
-    "express": "^4.21.2",
-    "pino": "9.5.0",
-    "qrcode": "^1.5.4",
-    "qrcode-terminal": "^0.12.0"
+    "@ryuu-reinzz/button-helper": "^2.2.3",
+    "@whiskeysockets/baileys": "^7.0.0-rc14",
+    "acrcloud": "^1.4.0",
+    "axios": "^1.7.2",
+    "chalk": "^5.3.0",
+    "moment-timezone": "^0.5.45",
+    "pino": "^9.5.0",
+    "qrcode-terminal": "^0.12.0",
+    "yt-search": "^2.13.1",
+    "youtubei.js": "^17.2.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0"
   }
 }
