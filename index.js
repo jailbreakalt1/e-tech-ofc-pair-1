@@ -10,8 +10,8 @@ import moment from 'moment-timezone';
 import { settings, PROTECTED_OWNER_NUMS, COMMAND_CATEGORIES } from './config/settings.js';
 import { loadCommands } from './lib/commandLoader.js';
 import { SessionManager } from './lib/sessionManager.js';
-import { checkRateLimit, clearRateLimit } from './lib/rateLimiter.js';
-import { isOwner, isSudo, isGroup, getSender, sanitizePhone, toJid, formatUptime, truncate } from './lib/utils.js';
+import { checkRateLimit } from './lib/rateLimiter.js';
+import { isOwner, isSudo, isGroup, getSender, sanitizePhone, toJid, formatUptime } from './lib/utils.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -29,31 +29,39 @@ global.creact = global.creact !== false;
 const sessionManager = new SessionManager(settings.sessionName);
 await sessionManager.initialize();
 
+// Add safeReadFile to sessionManager
+sessionManager.safeReadFile = (filepath, fallback = null) => {
+  try {
+    if (!fs.existsSync(filepath)) return fallback;
+    const raw = fs.readFileSync(filepath, 'utf8');
+    if (!raw.trim()) return fallback;
+    return JSON.parse(raw);
+  } catch {
+    return fallback;
+  }
+};
+
 if (process.env.SESSION_ID) {
   await sessionManager.loadFromUrl(process.env.SESSION_ID);
 }
 
-const { state, saveCreds } = await useMultiFileAuthState(sessionManager.getCredsFile());
-
-const sock = makeWASocket({
-  auth: state,
-  markOnlineOnConnect: false,
-  syncFullHistory: false,
-  logger: pino({ level: 'silent' }),
-  browser: Browsers.windows('Chrome'),
-  connectTimeoutMs: 60000,
-  defaultQueryTimeoutMs: 60000,
-  keepAliveIntervalMs: 30000,
-  retryRequestDelayMs: 250,
-  maxRetries: 5,
-});
-
 const { commands, categories } = await loadCommands(path.join(__dirname, 'commands'));
+
+const subMenus = {
+  "1": `╭───◐\n│ 👑 OWNER MENU\n╰───◐\n╭───◐\n│.privacy 🔵\n│.setting ⚙️\n│.getdp 🥰\n│.csong 🎵\n│.forward 💯\n│.setsudo 👑\n│.delsudo 🚫\n│.setcall 📞\n│.delcall 🔓\n│.ban 🔨\n│.unban ✅\n│.boost 🚀\n│.doboost 🔥\n│.rboost ❤️\n╰───◐\n${settings.footer}`,
+  "2": `╭───◐\n│ 🌐 SOCIAL MENU\n╰───◐\n╭───◐\n│.song 🎧\n│.video 📹\n│.fb 📘\n│.tiktok 🎵\n│.insta 📸\n│.twitter 🐦\n│.movie 🎬\n│.apk 📱\n│.img 🖼️\n╰───◐\n${settings.footer}`,
+  "3": `╭───◐\n│ 🤖 AI MENU\n│.ai 💬\n│.gpt 🧠\n│.imagine 🎨\n│.gemini ✨\n╰───◐\n${settings.footer}`,
+  "4": `╭───◐\n│ 👥 GROUP MENU\n│.add ➕.kick 👢.promote 👑.demote 🔻.tagall 👥.hidetag 👁️.open 🔓.close 🔒\n╰───◐\n${settings.footer}`,
+  "5": `╭───◐\n│ 🛠️ TOOLS MENU\n│.ping 📶.alive 🖐️.menu 🌍.sticker 🏷️.toimg 🖼️\n╰───◐\n${settings.footer}`,
+  "6": `╭───◐\n│ 📚 EDUCATION MENU\n│.define 📖.translate 🌐.wikipedia 📚\n╰───◐\n${settings.footer}`,
+  "7": `╭───◐\n│ 📢 CHANNEL MENU\n│.mychannels 📋.setchannel 📌.delchannel 🗑️.creact ⚡\n╰───◐\n│ Channel: ${settings.channelLink}\n╰───◐\n${settings.footer}`
+};
 
 let botGeneration = 0;
 let pendingRestart = null;
 let authFailureStreak = 0;
 const AUTH_FAILURE_LIMIT = 3;
+let sock = null;
 
 function scheduleRestart(delayMs, reason) {
   if (pendingRestart) return;
@@ -75,16 +83,48 @@ function isProtectedAction(body) {
 }
 
 async function startBot() {
+  // Check if valid session exists before connecting
+  const credsFile = sessionManager.getCredsFile();
+  if (!fs.existsSync(credsFile)) {
+    console.log(chalk.yellow('⚠️ No session found. Waiting for pairing via /pair or /qr endpoint...'));
+    return;
+  }
+
+  const creds = sessionManager.safeReadFile(credsFile);
+  if (!creds || !creds.me?.id) {
+    console.log(chalk.yellow('⚠️ Invalid session. Waiting for pairing...'));
+    return;
+  }
+
   botGeneration++;
   const myGeneration = botGeneration;
 
+  const { state, saveCreds } = await useMultiFileAuthState(sessionManager.sessionDir);
+
+  sock = makeWASocket({
+    auth: state,
+    markOnlineOnConnect: false,
+    syncFullHistory: false,
+    logger: pino({ level: 'silent' }),
+    browser: Browsers.windows('Chrome'),
+    connectTimeoutMs: 180000,
+    defaultQueryTimeoutMs: 180000,
+    keepAliveIntervalMs: 10000,
+    retryRequestDelayMs: 250,
+    maxRetries: 5,
+  });
+
   sock.ev.on('creds.update', async (creds) => {
-    await sessionManager.saveCreds(creds);
+    await saveCreds(creds);
+    console.log('💾 Creds saved');
   });
 
   sock.ev.on('connection.update', async (update) => {
     const time = moment().tz('Africa/Lagos').format('HH:mm:ss');
-    if (update.qr) qrcode.generate(update.qr, { small: true });
+    if (update.qr) {
+      console.log(chalk.yellow('📱 QR received - session may have expired'));
+      qrcode.generate(update.qr, { small: true });
+    }
 
     if (update.connection === 'open') {
       if (myGeneration !== botGeneration) return;
@@ -212,7 +252,6 @@ async function startBot() {
       if (commands.has(cmdName)) {
         const cmd = commands.get(cmdName);
 
-        // Permission checks
         if (cmd.ownerOnly && !isRealOwner(sender)) {
           await sock.sendMessage(chat, { text: '❌ Owner only command!' }, { quoted: m });
           return;
@@ -226,7 +265,6 @@ async function startBot() {
           return;
         }
 
-        // Rate limiting
         const rateKey = `${sender}:${cmdName}`;
         const limitType = cmd.category === 'owner' ? 'admin' : (cmd.heavy ? 'heavy' : 'default');
         const limit = checkRateLimit(rateKey, limitType);
@@ -259,29 +297,28 @@ async function startBot() {
   });
 }
 
-const subMenus = {
-  "1": `╭───◐\n│ 👑 OWNER MENU\n╰───◐\n╭───◐\n│.privacy 🔵\n│.setting ⚙️\n│.getdp 🥰\n│.csong 🎵\n│.forward 💯\n│.setsudo 👑\n│.delsudo 🚫\n│.setcall 📞\n│.delcall 🔓\n│.ban 🔨\n│.unban ✅\n│.boost 🚀\n│.doboost 🔥\n│.rboost ❤️\n╰───◐\n${settings.footer}`,
-  "2": `╭───◐\n│ 🌐 SOCIAL MENU\n╰───◐\n╭───◐\n│.song 🎧\n│.video 📹\n│.fb 📘\n│.tiktok 🎵\n│.insta 📸\n│.twitter 🐦\n│.movie 🎬\n│.apk 📱\n│.img 🖼️\n╰───◐\n${settings.footer}`,
-  "3": `╭───◐\n│ 🤖 AI MENU\n│.ai 💬\n│.gpt 🧠\n│.imagine 🎨\n│.gemini ✨\n╰───◐\n${settings.footer}`,
-  "4": `╭───◐\n│ 👥 GROUP MENU\n│.add ➕.kick 👢.promote 👑.demote 🔻.tagall 👥.hidetag 👁️.open 🔓.close 🔒\n╰───◐\n${settings.footer}`,
-  "5": `╭───◐\n│ 🛠️ TOOLS MENU\n│.ping 📶.alive 🖐️.menu 🌍.sticker 🏷️.toimg 🖼️\n╰───◐\n${settings.footer}`,
-  "6": `╭───◐\n│ 📚 EDUCATION MENU\n│.define 📖.translate 🌐.wikipedia 📚\n╰───◐\n${settings.footer}`,
-  "7": `╭───◐\n│ 📢 CHANNEL MENU\n│.mychannels 📋.setchannel 📌.delchannel 🗑️.creact ⚡\n╰───◐\n│ Channel: ${settings.channelLink}\n╰───◐\n${settings.footer}`
-};
-
-startBot().catch(error => {
-  console.log(chalk.red(`Startup failed: ${error.message}`));
-  scheduleRestart(3000, 'startup failure');
-});
+// Check for existing session and start bot if valid
+const credsFile = sessionManager.getCredsFile();
+const initialCreds = sessionManager.safeReadFile(credsFile);
+if (initialCreds && initialCreds.me?.id) {
+  console.log('✅ Valid session found, starting bot...');
+  startBot().catch(error => {
+    console.log(chalk.red(`Startup failed: ${error.message}`));
+    scheduleRestart(3000, 'startup failure');
+  });
+} else {
+  console.log(chalk.yellow('⚠️ No valid session. Bot will start after pairing via /pair or /qr'));
+  console.log(chalk.cyan('💡 Use the pairing server (e-tech-ofc-pair) to generate session'));
+}
 
 process.on('SIGINT', async () => {
   console.log(chalk.yellow('\n🛑 Shutting down gracefully...'));
-  try { await sock.end(undefined, undefined, { reason: 'user shutdown' }); } catch {}
+  if (sock) { try { await sock.end(undefined, undefined, { reason: 'user shutdown' }); } catch {} }
   process.exit(0);
 });
 
 process.on('SIGTERM', async () => {
   console.log(chalk.yellow('\n🛑 Shutting down gracefully...'));
-  try { await sock.end(undefined, undefined, { reason: 'system shutdown' }); } catch {}
+  if (sock) { try { await sock.end(undefined, undefined, { reason: 'system shutdown' }); } catch {} }
   process.exit(0);
 });
