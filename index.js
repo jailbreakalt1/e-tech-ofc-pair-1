@@ -29,7 +29,6 @@ global.creact = global.creact !== false;
 const sessionManager = new SessionManager(settings.sessionName);
 await sessionManager.initialize();
 
-// Add safeReadFile to sessionManager
 sessionManager.safeReadFile = (filepath, fallback = null) => {
   try {
     if (!fs.existsSync(filepath)) return fallback;
@@ -62,6 +61,8 @@ let pendingRestart = null;
 let authFailureStreak = 0;
 const AUTH_FAILURE_LIMIT = 3;
 let sock = null;
+let connectionStable = false;
+let stableStart = 0;
 
 function scheduleRestart(delayMs, reason) {
   if (pendingRestart) return;
@@ -83,7 +84,6 @@ function isProtectedAction(body) {
 }
 
 async function startBot() {
-  // Check if valid session exists before connecting
   const credsFile = sessionManager.getCredsFile();
   if (!fs.existsSync(credsFile)) {
     console.log(chalk.yellow('⚠️ No session found. Waiting for pairing via /pair or /qr endpoint...'));
@@ -109,9 +109,12 @@ async function startBot() {
     browser: Browsers.windows('Chrome'),
     connectTimeoutMs: 180000,
     defaultQueryTimeoutMs: 180000,
-    keepAliveIntervalMs: 10000,
-    retryRequestDelayMs: 250,
-    maxRetries: 5,
+    keepAliveIntervalMs: 30000,
+    retryRequestDelayMs: 2000,
+    maxRetries: 15,
+    emitOwnEvents: true,
+    fireInitQueries: true,
+    generateHighQualityLinkPreview: false,
   });
 
   sock.ev.on('creds.update', async (creds) => {
@@ -129,6 +132,8 @@ async function startBot() {
     if (update.connection === 'open') {
       if (myGeneration !== botGeneration) return;
       authFailureStreak = 0;
+      connectionStable = true;
+      const stableStart = Date.now();
       console.log(chalk.green(`✅ [${time}] E TECH OFC Connected`));
       console.log(chalk.green(`✅ Protected Owners: ${PROTECTED_OWNER_NUMS.join(' & ')}`));
       console.log(chalk.cyan(`✅ Loaded ${commands.size} commands across ${categories.size} categories`));
@@ -144,6 +149,13 @@ async function startBot() {
 
     if (update.connection === 'close') {
       if (myGeneration !== botGeneration) return;
+      
+      // Only allow reconnect if connection was stable for at least 30s
+      if (connectionStable && stableStart && (Date.now() - stableStart < 30000)) {
+        console.log(chalk.yellow('⚠️ Connection was not stable long enough, skipping immediate reconnect'));
+        return;
+      }
+      
       const statusCode = update.lastDisconnect?.error?.output?.statusCode;
       const errorMessage = update.lastDisconnect?.error?.message || 'unknown error';
       const isLoggedOut = statusCode === DisconnectReason.loggedOut;
@@ -161,8 +173,22 @@ async function startBot() {
         scheduleRestart(3000, 'fresh pairing code/QR');
         return;
       }
-      console.log(chalk.yellow(`Connection closed (${statusCode || errorMessage}); preserving auth and reconnecting`));
-      scheduleRestart(3000, `server close ${statusCode || errorMessage}`);
+
+      let reconnectDelay = 10000;
+      if (statusCode === 440) {
+        console.log(chalk.yellow(`⚠️ Stream error 440 - likely conflict, waiting 120s...`));
+        reconnectDelay = 300000;
+      } else if (statusCode === 515 || statusCode === 503 || statusCode === 408) {
+        console.log(chalk.yellow(`🔄 Stream error ${statusCode} - reconnecting...`));
+        reconnectDelay = 30000;
+      } else if (statusCode === 401) {
+        console.log(chalk.red(`❌ Unauthorized - session invalid`));
+        reconnectDelay = 5000;
+      }
+
+      connectionStable = false;
+      console.log(chalk.yellow(`Connection closed (${statusCode || errorMessage}); preserving auth and reconnecting in ${reconnectDelay/1000}s`));
+      scheduleRestart(reconnectDelay, `server close ${statusCode || errorMessage}`);
     }
   });
 
@@ -297,7 +323,6 @@ async function startBot() {
   });
 }
 
-// Check for existing session and start bot if valid
 const credsFile = sessionManager.getCredsFile();
 const initialCreds = sessionManager.safeReadFile(credsFile);
 if (initialCreds && initialCreds.me?.id) {
